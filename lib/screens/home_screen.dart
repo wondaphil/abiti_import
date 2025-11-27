@@ -1,5 +1,10 @@
 import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
+
 import '../db/database_helper.dart';
 import 'add_item_screen.dart';
 import 'item_detail_screen.dart';
@@ -44,7 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
         i.name, 
         i.description, 
         i.categoryId,
-        i.photo,                           -- <-- NEW COLUMN
+        i.photo,
         c.name AS category,
 
         IFNULL(SUM(
@@ -82,10 +87,14 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ===========================================================================
+  // EDIT ITEM — NOW WITH PHOTO SUPPORT
+  // ===========================================================================
   Future<void> _editItem(Map<String, dynamic> item) async {
+    final codeCtrl = TextEditingController(text: item['code']);
     final nameCtrl = TextEditingController(text: item['name']);
     final descCtrl = TextEditingController(text: item['description']);
-    final codeCtrl = TextEditingController(text: item['code']);
+    Uint8List? _editPhotoBytes = item['photo']; // load existing photo
 
     final db = DatabaseHelper.instance;
     final categories = await db.getAllCategories();
@@ -96,74 +105,185 @@ class _HomeScreenState extends State<HomeScreen> {
       categoryId = null;
     }
 
-    final updated = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit Item'),
-        content: SingleChildScrollView(
-          child: Column(
+    // ------------- IMAGE PROCESSING -------------
+    Future<void> _processEditImage(Uint8List raw, StateSetter ss) async {
+      try {
+        final decoded = img.decodeImage(raw);
+        if (decoded != null) {
+          final resized = img.copyResize(
+            decoded,
+            width: decoded.width > decoded.height ? 1600 : null,
+            height: decoded.height >= decoded.width ? 1600 : null,
+          );
+
+          final compressed =
+              Uint8List.fromList(img.encodeJpg(resized, quality: 80));
+
+          ss(() => _editPhotoBytes = compressed);
+        }
+      } catch (e) {
+        debugPrint('❌ Edit image processing failed: $e');
+      }
+    }
+
+    // ------------- OPEN PICKER -------------
+    Future<void> pickPhoto(StateSetter ss) async {
+      showModalBottomSheet(
+        context: context,
+        builder: (_) => SafeArea(
+          child: Wrap(
             children: [
-              TextField(
-                controller: codeCtrl,
-                decoration: const InputDecoration(labelText: 'Code'),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text("Pick from Gallery"),
+                onTap: () async {
+                  Navigator.pop(context);
+
+                  final result = await FilePicker.platform.pickFiles(
+                    type: FileType.image,
+                    allowCompression: false,
+                  );
+                  if (result == null) return;
+
+                  Uint8List? raw;
+                  if (result.files.single.bytes != null) {
+                    raw = result.files.single.bytes;
+                  } else if (result.files.single.path != null) {
+                    raw = await File(result.files.single.path!).readAsBytes();
+                  }
+
+                  if (raw != null) await _processEditImage(raw, ss);
+                },
               ),
-              const SizedBox(height: 6),
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(labelText: 'Name'),
-              ),
-              const SizedBox(height: 6),
-              TextField(
-                controller: descCtrl,
-                decoration: const InputDecoration(labelText: 'Description'),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<int>(
-                value: categoryId,
-                decoration: const InputDecoration(labelText: 'Category'),
-                items: [
-                  const DropdownMenuItem<int>(
-                    value: null,
-                    child: Text('None'),
-                  ),
-                  ...categories.map((c) => DropdownMenuItem<int>(
-                        value: c['id'],
-                        child: Text(c['name']),
-                      )),
-                ],
-                onChanged: (v) => categoryId = v,
+              ListTile(
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: const Text("Take Photo"),
+                onTap: () async {
+                  Navigator.pop(context);
+
+                  final picker = ImagePicker();
+                  final picked =
+                      await picker.pickImage(source: ImageSource.camera);
+                  if (picked == null) return;
+
+                  final raw = await picked.readAsBytes();
+                  await _processEditImage(raw, ss);
+                },
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () async {
-              if (nameCtrl.text.isEmpty) return;
+      );
+    }
 
-              await db.updateItem({
-                'id': item['id'],
-                'code': codeCtrl.text,
-                'name': nameCtrl.text,
-                'description': descCtrl.text,
-                'categoryId': categoryId,
-              });
+    // ================= DIALOG ==================
+    final updated = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, ss) => AlertDialog(
+          title: const Text('Edit Item'),
+          content: SingleChildScrollView(
+            child: Column(
+              children: [
+                // ---------------- PHOTO ----------------
+                GestureDetector(
+                  onTap: () => pickPhoto(ss),
+                  child: _editPhotoBytes != null
+                      ? Stack(
+                          alignment: Alignment.topRight,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.memory(
+                                _editPhotoBytes!,
+                                width: 120,
+                                height: 120,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded,
+                                  color: Colors.redAccent),
+                              onPressed: () => ss(() => _editPhotoBytes = null),
+                            ),
+                          ],
+                        )
+                      : Container(
+                          width: 120,
+                          height: 120,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade300,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(Icons.add_a_photo_outlined,
+                              size: 40, color: Colors.grey),
+                        ),
+                ),
 
-              Navigator.pop(context, true);
-            },
-            child: const Text('Save'),
+                const SizedBox(height: 12),
+
+                TextField(
+                  controller: codeCtrl,
+                  decoration: const InputDecoration(labelText: 'Code'),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(labelText: 'Name'),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: descCtrl,
+                  decoration: const InputDecoration(labelText: 'Description'),
+                ),
+                const SizedBox(height: 12),
+
+                DropdownButtonFormField<int>(
+                  value: categoryId,
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('None')),
+                    ...categories.map((c) =>
+                        DropdownMenuItem(value: c['id'], child: Text(c['name']))),
+                  ],
+                  onChanged: (v) => categoryId = v,
+                ),
+              ],
+            ),
           ),
-        ],
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (nameCtrl.text.isEmpty) return;
+
+                await db.updateItem({
+                  'id': item['id'],
+                  'code': codeCtrl.text,
+                  'name': nameCtrl.text,
+                  'description': descCtrl.text,
+                  'categoryId': categoryId,
+                  'photo': _editPhotoBytes, // ★ UPDATE PHOTO
+                });
+
+                Navigator.pop(context, true);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
       ),
     );
 
     if (updated == true) _loadItems();
   }
 
+  // ===========================================================================
+  // DELETE ITEM
+  // ===========================================================================
   Future<void> _deleteItem(int id) async {
     final db = DatabaseHelper.instance;
 
@@ -178,7 +298,7 @@ class _HomeScreenState extends State<HomeScreen> {
     String message = 'Are you sure you want to delete "$itemName"?';
     if (stock > 0) {
       message +=
-          '\n\n⚠️ This item still has $stock units in stock. Its history will also be removed.';
+          '\n\n⚠️ This item still has $stock units in stock. Its history will be removed.';
     } else {
       message += '\n\nThis item has no remaining stock.';
     }
@@ -193,9 +313,7 @@ class _HomeScreenState extends State<HomeScreen> {
               onPressed: () => Navigator.pop(context, false),
               child: const Text('Cancel')),
           FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.redAccent,
-            ),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('Delete'),
           ),
@@ -214,6 +332,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // ===========================================================================
+  // FILTER
+  // ===========================================================================
   void _applyFilters() {
     setState(() {
       filteredItems = allItems.where((item) {
@@ -250,10 +371,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadItems();
   }
 
-  // ---------------------------------------------------------------------------
+  // ===========================================================================
   // UI
-  // ---------------------------------------------------------------------------
-
+  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -346,13 +466,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
             DropdownButtonFormField<int>(
               value: selectedCategoryId,
-              decoration: const InputDecoration(
-                labelText: 'Filter by Category',
-              ),
+              decoration: const InputDecoration(labelText: 'Filter by Category'),
               items: [
                 const DropdownMenuItem(value: null, child: Text("All Categories")),
-                ...categories.map((c) =>
-                    DropdownMenuItem(value: c['id'], child: Text(c['name']))),
+                ...categories
+                    .map((c) => DropdownMenuItem(value: c['id'], child: Text(c['name']))),
               ],
               onChanged: (v) {
                 selectedCategoryId = v;
@@ -410,8 +528,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   // ---------------- TEXT COLUMN --------------------
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           item['name'] ?? '',
@@ -424,8 +541,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                             .toString()
                                             .isNotEmpty)
                                           Padding(
-                                            padding:
-                                                const EdgeInsets.only(top: 4),
+                                            padding: const EdgeInsets.only(top: 4),
                                             child: Text(
                                               item['description'],
                                               style: const TextStyle(
@@ -437,10 +553,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
                                         const SizedBox(height: 6),
 
-                                        // ------------ STOCK LINES ---------------------
                                         Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
+                                          crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
                                             Text(
                                               item['tx_count'] == 0

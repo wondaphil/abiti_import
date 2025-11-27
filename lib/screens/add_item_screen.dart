@@ -126,13 +126,13 @@ class _AddItemScreenState extends State<AddItemScreen> {
       // Resize max dimension to 500px (maintains aspect ratio)
       final resized = img.copyResize(
         decoded,
-        width: decoded.width >= decoded.height ? 500 : null,
-        height: decoded.height > decoded.width ? 500 : null,
+        width: decoded.width >= decoded.height ? 1600 : null,
+        height: decoded.height > decoded.width ? 1600 : null,
       );
 
-      // JPEG encode @ quality 85%
+      // JPEG encode @ quality 80%
       final compressed =
-          Uint8List.fromList(img.encodeJpg(resized, quality: 85));
+          Uint8List.fromList(img.encodeJpg(resized, quality: 80));
 
       setState(() => _photoBytes = compressed);
     } catch (e) {

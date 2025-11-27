@@ -440,34 +440,38 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
           // SMALL THUMBNAIL
           // ----------------------------------------------------
           if (itemPhoto != null)
-            GestureDetector(
-              onTap: _openFullImage,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.memory(
-                  itemPhoto!,
-                  width: 120,
-                  height: 120,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    color: Colors.grey.shade300,
-                    width: 120,
-                    height: 120,
-                    child: const Icon(Icons.broken_image),
-                  ),
-                ),
-              ),
-            )
-          else
-            Container(
-              width: 120,
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.photo, size: 40),
-            ),
+			  GestureDetector(
+				onTap: _openFullImage,
+				child: Center(
+				  child: ClipRRect(
+					borderRadius: BorderRadius.circular(8),
+					child: Image.memory(
+					  itemPhoto!,
+					  width: 120,
+					  height: 120,
+					  fit: BoxFit.cover,
+					  errorBuilder: (_, __, ___) => Container(
+						color: Colors.grey.shade300,
+						width: 120,
+						height: 120,
+						child: const Icon(Icons.broken_image),
+					  ),
+					),
+				  ),
+				),
+			  )
+			else
+			  Center( // Add this Center widget
+				child: Container(
+				  width: 120,
+				  height: 120,
+				  decoration: BoxDecoration(
+					color: Colors.grey.shade300,
+					borderRadius: BorderRadius.circular(8),
+				  ),
+				  child: const Icon(Icons.photo, size: 40),
+				),
+			  ),
 
           const SizedBox(height: 16),
 
@@ -577,28 +581,38 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
           // PHOTO THUMBNAIL
           // ----------------------------------------------------
           if (itemPhoto != null)
-            GestureDetector(
-              onTap: _openFullImage,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.memory(
-                  itemPhoto!,
-                  width: 120,
-                  height: 120,
-                  fit: BoxFit.cover,
-                ),
-              ),
-            )
-          else
-            Container(
-              width: 120,
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.photo, size: 40),
-            ),
+			  GestureDetector(
+				onTap: _openFullImage,
+				child: Center(
+				  child: ClipRRect(
+					borderRadius: BorderRadius.circular(8),
+					child: Image.memory(
+					  itemPhoto!,
+					  width: 120,
+					  height: 120,
+					  fit: BoxFit.cover,
+					  errorBuilder: (_, __, ___) => Container(
+						color: Colors.grey.shade300,
+						width: 120,
+						height: 120,
+						child: const Icon(Icons.broken_image),
+					  ),
+					),
+				  ),
+				),
+			  )
+			else
+			  Center( // Add this Center widget
+				child: Container(
+				  width: 120,
+				  height: 120,
+				  decoration: BoxDecoration(
+					color: Colors.grey.shade300,
+					borderRadius: BorderRadius.circular(8),
+				  ),
+				  child: const Icon(Icons.photo, size: 40),
+				),
+			  ),
 
           const SizedBox(height: 16),
 
@@ -679,7 +693,7 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
     );
   }
 
-  // =========================================================
+    // =========================================================
   // CSV EXPORT
   // =========================================================
   Future<void> _exportToCSV() async {
@@ -696,7 +710,9 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
         WHERE i.id = ?
       ''', [itemId]);
 
-      if (cat.isNotEmpty) categoryName = cat.first['category'].toString();
+      if (cat.isNotEmpty && cat.first['category'] != null) {
+        categoryName = cat.first['category'].toString();
+      }
     } catch (_) {}
 
     final txs = await db.query(
@@ -721,20 +737,25 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
     int totalOut = 0;
 
     for (final tx in txs) {
-      final dateText = DateFormat('yyyy-MM-dd')
-          .format(DateTime.parse(tx['date']));
-      final type = tx['type'];
-      final qty = tx['quantity'];
-      final receipt = tx['receiptNo'] ?? '';
-      final notes = tx['notes'] ?? '';
+      final date = tx['date']?.toString() ?? '';
+      final qty = int.tryParse(tx['quantity'].toString()) ?? 0;
+      final type = tx['type']?.toString() ?? '';
+      final receipt = tx['receiptNo']?.toString() ?? '';
+      final notes = tx['notes']?.toString() ?? '';
 
-      int inQty = 0, outQty = 0;
+      final parsedDate = DateTime.tryParse(date);
+      final dateText = parsedDate != null
+          ? DateFormat('yyyy-MM-dd').format(parsedDate)
+          : date;
+
+      int inQty = 0;
+      int outQty = 0;
 
       if (type == 'IN') {
         inQty = qty;
         totalIn += qty;
         runningStock += qty;
-      } else {
+      } else if (type == 'OUT') {
         outQty = qty;
         totalOut += qty;
         runningStock -= qty;
@@ -756,15 +777,59 @@ class _ItemDetailScreenState extends State<ItemDetailScreen>
     rows.add(['TOTALS', '', '', '', '', totalIn, totalOut, runningStock]);
 
     final csvText = const ListToCsvConverter().convert(rows);
-    final csvBytes = Uint8List.fromList([
-      0xEF, 0xBB, 0xBF,
-      ...utf8.encode(csvText),
-    ]);
+    final csvBytes =
+        Uint8List.fromList([0xEF, 0xBB, 0xBF, ...utf8.encode(csvText)]);
 
     final tmp = await getTemporaryDirectory();
     final file = File('${tmp.path}/${item['name']}_transactions.csv');
     await file.writeAsBytes(csvBytes);
 
     await Share.shareXFiles([XFile(file.path)]);
+  }
+
+  // =========================================================
+  // BUILD METHOD (REQUIRED!)
+  // =========================================================
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(item['name'] ?? 'Item Details'),
+        actions: [
+          if (_tabController.index == 0)
+            IconButton(
+              icon: const Icon(Icons.share_outlined),
+              onPressed: _exportToCSV,
+            ),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
+          indicatorColor: Colors.white,
+          labelStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+          unselectedLabelStyle:
+              const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+          tabs: const [
+            Tab(text: 'Invoice'),
+            Tab(text: 'Store'),
+          ],
+          onTap: (_) => setState(() {}),
+        ),
+      ),
+
+      floatingActionButton:
+          _tabController.index == 0 ? _buildInvoiceFABs() : _buildStoreFABs(),
+
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildInvoiceUI(),
+          _buildStoreUI(),
+        ],
+      ),
+    );
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -14,7 +15,7 @@ class DatabaseHelper {
   }
 
   // =============================================================
-  // INITIALIZE DATABASE (version 2, includes migration)
+  // INITIALIZE DATABASE (VERSION 3)
   // =============================================================
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
@@ -22,17 +23,16 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 2,                   // 🔥 NEW VERSION
+      version: 3,
       onCreate: _createDB,
-      onUpgrade: _upgradeDB,        // 🔥 MIGRATION ADDED
+      onUpgrade: _upgradeDB,
     );
   }
 
   // =============================================================
-  // CREATE FULL DATABASE SCHEMA
+  // CREATE FULL SCHEMA (VERSION 3)
   // =============================================================
   Future _createDB(Database db, int version) async {
-    // ---------------------- Categories --------------------------
     await db.execute('''
       CREATE TABLE categories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +42,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ------------------------- Items -----------------------------
     await db.execute('''
       CREATE TABLE items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,13 +49,13 @@ class DatabaseHelper {
         code TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         description TEXT,
+        photo BLOB,                                  -- NEW COLUMN
         createdAt TEXT NOT NULL DEFAULT (datetime('now')),
         updatedAt TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (categoryId) REFERENCES categories(id) ON DELETE SET NULL
       )
     ''');
 
-    // -------------------- Invoice Transactions -------------------
     await db.execute('''
       CREATE TABLE stock_transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +69,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ------------------------- Store Withdrawals -----------------
     await db.execute('''
       CREATE TABLE store_withdrawals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,163 +83,131 @@ class DatabaseHelper {
   }
 
   // =============================================================
-  // MIGRATION FROM VERSION 1 → VERSION 2
+  // MIGRATIONS
   // =============================================================
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // Add withdrawal table without touching data
       await db.execute('''
         CREATE TABLE IF NOT EXISTS store_withdrawals (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           itemId INTEGER NOT NULL,
           quantity INTEGER NOT NULL,
-          type TEXT CHECK(type IN ('IN', 'OUT')) NOT NULL,
+          type TEXT CHECK(type IN ('IN','OUT')) NOT NULL,
           date TEXT NOT NULL DEFAULT (datetime('now')),
           notes TEXT,
           FOREIGN KEY (itemId) REFERENCES items(id) ON DELETE CASCADE
         )
       ''');
     }
+
+    if (oldVersion < 3) {
+      // ADD PHOTO COLUMN IF NOT EXISTS
+      await db.execute('ALTER TABLE items ADD COLUMN photo BLOB');
+    }
   }
 
   // =============================================================
-  // ------------------------------- ITEMS ------------------------
+  // ITEMS CRUD
   // =============================================================
-
   Future<int> insertItem(Map<String, dynamic> row) async {
     final db = await instance.database;
     return await db.insert('items', row);
   }
 
-  Future<List<Map<String, dynamic>>> getAllItems() async {
-    final db = await instance.database;
-    return await db.query('items', orderBy: 'createdAt DESC');
-  }
-
   Future<int> updateItem(Map<String, dynamic> row) async {
     final db = await instance.database;
     row['updatedAt'] = DateTime.now().toIso8601String();
-    return await db.update('items', row,
-        where: 'id = ?', whereArgs: [row['id']]);
+    return await db.update('items', row, where: 'id = ?', whereArgs: [row['id']]);
   }
 
   Future<int> deleteItem(int id) async {
     final db = await instance.database;
-    return await db.delete('items', where: 'id = ?', whereArgs: [id]);
+    return db.delete('items', where: 'id = ?', whereArgs: [id]);
   }
 
   // =============================================================
-  // --------------------------- CATEGORIES -----------------------
+  // CATEGORY CRUD
   // =============================================================
+  Future<List<Map<String, dynamic>>> getAllCategories() async {
+    final db = await instance.database;
+    return db.query('categories', orderBy: 'name ASC');
+  }
 
   Future<int> insertCategory(Map<String, dynamic> row) async {
     final db = await instance.database;
-    return await db.insert('categories', row);
-  }
-
-  Future<List<Map<String, dynamic>>> getAllCategories() async {
-    final db = await instance.database;
-    return await db.query('categories', orderBy: 'name ASC');
+    return db.insert('categories', row);
   }
 
   Future<int> deleteCategory(int id) async {
     final db = await instance.database;
-    return await db.delete('categories', where: 'id = ?', whereArgs: [id]);
+    return db.delete('categories', where: 'id = ?', whereArgs: [id]);
   }
 
   // =============================================================
-  // ---------------------- INVOICE TRANSACTIONS ------------------
-  // (Already Exists — unchanged)
+  // INVOICE TX
   // =============================================================
-
   Future<int> addStockTransaction(Map<String, dynamic> row) async {
     final db = await instance.database;
-    return await db.insert('stock_transactions', row);
+    return db.insert('stock_transactions', row);
   }
 
   Future<List<Map<String, dynamic>>> getStockHistory(int itemId) async {
     final db = await instance.database;
-    return await db.query(
-      'stock_transactions',
-      where: 'itemId = ?',
-      whereArgs: [itemId],
-      orderBy: 'date DESC',
-    );
+    return db.query('stock_transactions',
+        where: 'itemId = ?', whereArgs: [itemId], orderBy: 'date DESC');
   }
 
   Future<int> getCurrentStock(int itemId) async {
     final db = await instance.database;
-
     final result = await db.rawQuery('''
-      SELECT 
-        IFNULL(SUM(
-          CASE WHEN type = 'IN' THEN quantity 
-               WHEN type = 'OUT' THEN -quantity 
-               ELSE 0 END
-        ), 0) AS currentStock
-      FROM stock_transactions
-      WHERE itemId = ?
+      SELECT IFNULL(SUM(
+        CASE WHEN type='IN' THEN quantity
+             WHEN type='OUT' THEN -quantity END
+      ),0) AS total
+      FROM stock_transactions WHERE itemId=?
     ''', [itemId]);
 
-    return result.first['currentStock'] as int;
+    return result.first['total'] as int;
   }
 
   // =============================================================
-  // ------------------------ STORE WITHDRAWALS -------------------
-  // (New Ledger — Internal stock movements)
+  // STORE LEDGER
   // =============================================================
-
   Future<int> addStoreWithdrawal(Map<String, dynamic> row) async {
     final db = await instance.database;
-    return await db.insert('store_withdrawals', row);
+    return db.insert('store_withdrawals', row);
   }
 
-  Future<List<Map<String, dynamic>>> getStoreWithdrawals(int itemId) async {
+  Future<List<Map<String, dynamic>>> getStoreWithdrawals(int id) async {
     final db = await instance.database;
-    return await db.query(
-      'store_withdrawals',
-      where: 'itemId = ?',
-      whereArgs: [itemId],
-      orderBy: 'date DESC',
-    );
+    return db.query('store_withdrawals',
+        where: 'itemId=?', whereArgs: [id], orderBy: 'date DESC');
   }
 
   Future<int> deleteStoreWithdrawal(int id) async {
     final db = await instance.database;
-    return await db.delete(
-      'store_withdrawals',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return db.delete('store_withdrawals', where: 'id=?', whereArgs: [id]);
   }
 
-  Future<int> getStoreStock(int itemId) async {
+  Future<int> getStoreStock(int id) async {
     final db = await instance.database;
-
     final result = await db.rawQuery('''
-      SELECT 
-        IFNULL(SUM(
-          CASE WHEN type = 'IN' THEN quantity 
-               WHEN type = 'OUT' THEN -quantity 
-          END
-        ), 0) AS storeStock
-      FROM store_withdrawals
-      WHERE itemId = ?
-    ''', [itemId]);
-
-    return result.first['storeStock'] as int;
+    SELECT IFNULL(SUM(
+      CASE WHEN type='IN' THEN quantity
+           WHEN type='OUT' THEN -quantity END
+    ),0) AS total
+    FROM store_withdrawals WHERE itemId=?
+    ''', [id]);
+    return result.first['total'] as int;
   }
 
   // =============================================================
-  // MISC
-  // =============================================================
-
   Future<void> reloadDatabase() async {
     if (_database != null) {
       await _database!.close();
       _database = null;
     }
-    await database;
+    await database; // reopen automatically
   }
 
   Future close() async {
